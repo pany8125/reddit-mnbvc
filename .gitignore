@@ -1,0 +1,10 @@
+#忽略文件
+./__pycache__
+./.pytest_cache
+./.vscode
+./build
+./dist
+./.idea
+./.ipynb_checkpoints
+./src_file
+./dest_file
