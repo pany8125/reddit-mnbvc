@@ -1,25 +1,19 @@
-疑问：
-1.smd清洗之前都是DB的dump出来的insert sql？
-2.生成的json没有转换成MNBVC论坛格式？
-3.之前处理的smd文件大概多大？最高6G多的comments文件，pandas能处理吗？
-
-目前遇到的问题：
-1.comments文件中没有顺序，如果pandas处理不了的话，现在的想法是先建立帖子id到comments对应多个行数的hash映射，然后依次处理submissions每一行时通过id关联
-    Q：关联不到的comments直接丢弃？
-
-```
 import json
 
 def build_index(reply_file):
     index = {}
+    i = 0
     with open(reply_file, 'r', encoding='utf-8') as f:
         while True:
+            i += 1
+            if i % 10000 == 0:
+                print(f"Processed {i} lines in file {reply_file}")
             position = f.tell()
             line = f.readline()
             if not line:
                 break  # 到达文件末尾
             reply = json.loads(line)
-            link_id = reply['link_id']
+            link_id = reply['link_id'].split('_')[1]
             if link_id not in index:
                 index[link_id] = []
             index[link_id].append(position)
@@ -36,14 +30,17 @@ def fetch_replies(index, reply_file, post_id):
             replies.append(reply)
     return replies
 
+# 测试：
 # 构建索引
-index = build_index('reply_file.jsonl')
+# index = build_index('./src_file/webdevelopment_comments')
 
 # 使用索引获取回复
-post_id = 'some_post_id'
-replies = fetch_replies(index, 'reply_file.jsonl', post_id)
+# post_id = 't3_zsb42b'
+# replies = fetch_replies(index, './src_file/webdevelopment_comments', post_id)
 
 # 处理回复
-for reply in replies:
-    print(reply)
-```
+# print(len(replies))
+# for reply in replies:
+#     print(reply)
+
+# 二分查找

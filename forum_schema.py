@@ -108,4 +108,4 @@ submission = Submission(
 # 生成JSON字符串
 submission_dict = submission.dict(by_alias=True, exclude_none=True)
 submission_json = json.dumps(submission_dict, indent=None, ensure_ascii=False)
-print(submission_json)
+# print(submission_json)
