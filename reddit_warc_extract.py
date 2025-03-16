@@ -5,6 +5,8 @@ import os
 import re
 from bs4 import BeautifulSoup
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from fastwarc.warc import ArchiveIterator, WarcRecordType
 import os
 
@@ -40,136 +42,6 @@ def is_reddit_url(url):
 def extract_base_url(url):
     parsed_url = urlparse(url)
     return f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-
-def chk_files(comments_file, submissions_file):
-    # 这里添加你的文件处理逻辑
-    logging.info(f"check {comments_file} and {submissions_file}")
-
-    with open(submissions_file, 'r', encoding='utf-8') as f:
-        # 读取第一行
-        line = f.readline().strip('\n').replace('\ufeff', '')
-        # 判断第一行是否为一个有效的json
-        try:
-            json_data = json.loads(line)
-        except json.JSONDecodeError:
-            line = f.readline()
-            logging.warning("JSONDecodeError")
-            logging.warning(f"Line 1, error!")
-            logging.warning(f"File submissions_file is not a valid json file!")
-            return False
-
-    with open(comments_file, 'r', encoding='utf-8') as f:
-        # 读取第一行
-        line = f.readline().strip('\n').replace('\ufeff', '')
-        # 判断第一行是否为一个有效的json
-        try:
-            json_data = json.loads(line)
-        except json.JSONDecodeError:
-            line = f.readline()
-            logging.warning("JSONDecodeError")
-            logging.warning(f"Line 1, error!")
-            logging.warning(f"File submissions_file is not a valid json file!")
-            return False
-    
-    # 按jsonl格式处理文件
-    process_reddit_files(comments_file, submissions_file)
-
-
-def process_reddit_files(comments_file, submissions_file):
-    # 添加文件处理逻辑
-    logging.info(f"Processing {comments_file} and {submissions_file}")
-
-    # 当前时间
-    cur_time = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-
-    # 处理提取逻辑
-    f_prefix_name = os.path.basename(submissions_file).split('.')[0].split('_')[0]
-    output_file_prefix = f'{SOURCE}_{f_prefix_name}_{cur_time}'
-
-    # 文件序号
-    file_number = 1
-    write_file = open(OUTPUT_DIR + f'{output_file_prefix}_{file_number:02}.jsonl', 'w', encoding='utf-8')
-    
-    # 打印write_file
-    logging.info(f"write_file: {write_file.name}")
-
-    # 构建索引
-    index = build_index(comments_file)
-
-    # 这里添加你的文件处理逻辑
-    logging.info(f"Processing {submissions_file}")
-
-    with open(submissions_file, 'r', encoding='utf-8') as f:
-        for line_number, line in enumerate(f, start=1):
-            # 打印迭代信息
-            logging.debug(f"Line {line_number}: {line}")
-            # 打印写入文件路径
-            logging.debug(f"Write file: {write_file.name}")
-            try:
-                json_data = json.loads(line)
-            except json.JSONDecodeError or KeyError:
-                logging.error("JSONDecodeError")
-                logging.error(f"Line {line_number}, error!")
-                exit()
-            process_reddit_schema(json_data, index, comments_file, write_file)
-            # 如果文件超过500M，就关闭文件，新建文件
-            if write_file.tell() > MAX_SIZE:
-                write_file.close()
-                file_number += 1
-                write_file = open(OUTPUT_DIR + f'{output_file_prefix}_{file_number:02}.jsonl', 'w', encoding='utf-8')
-
-def process_reddit_schema(json_data, index, comments_file, write_file):
-    # print(f"Processing {json_data['id']}")
-    
-    # 获取所有回复
-    comments = fetch_replies(index, comments_file, json_data["id"])
-    # 主贴
-    submissions = json_data
-    
-    # 创建Comment实例列表
-    comments_list = [
-        Comment(
-            # 如果name的key不存在，floor_id就取空
-            floor_id=comment["name"] if "name" in comment else "",
-            reply=comment["body"],
-            extended_field=json.dumps({
-                "回复人": comment["author"],
-                "引用人": comment["author"],
-                "回复时间": datetime.fromtimestamp(int(comment["created_utc"]), timezone.utc).strftime('%Y%m%d %H:%M:%S')
-            }, ensure_ascii=False)
-        )
-        for comment in comments
-    ]
-
-    # 创建Metadata实例
-    metadata = Metadata(
-        post_time=Submission.format_metadata_time(int(submissions["created_utc"])),
-        reply_count=len(comments_list),
-        extended_field=json.dumps({
-            "标签": submissions["subreddit"],
-            "点赞数": submissions["score"],
-            "原文": submissions["selftext"]
-        }, ensure_ascii=False)
-    )
-
-    # 创建Submission实例
-    submission = Submission(
-        id=submissions["id"],
-        title=submissions["title"],
-        source="reddit",
-        created_time=Submission.format_time(int(submissions["created_utc"])),
-        replies=comments_list,
-        metadata=metadata
-    )
-
-    # 生成json
-    # 生成JSON字符串
-    submission_dict = submission.dict(by_alias=True, exclude_none=True)
-    submission_json = json.dumps(submission_dict, indent=None, ensure_ascii=False)
-    
-    write_file.write(submission_json)
-    write_file.write('\n')
-    return True
 
 # 将文件中的内容清洗为标准的jsonl，处理后写入新文件
 def process_file_to_jsonl(input_file, output_file):
@@ -283,11 +155,30 @@ def process_file_to_json(input_file, output_file):
     return record_cnt, response_cnt, reddit_post
 
 
+def process_file(full_filename, orig_output_file, jsonl_output_file):
+    # 打印文件名和输出文件名
+    logging.info(f"Processing File: {full_filename}, Orig output File: {orig_output_file}, Output File: {jsonl_output_file}")
+    # 2. 针对每个文件，循环处理，提取json，一个warc文件中所有提取的json放在一个文件中
+    record_cnt, response_cnt, reddit_post = process_file_to_json(full_filename, orig_output_file)
+    
+    # 3. 针对所有的json文件，处理成标准jsonl格式，写入新文件，一个json文件对应一个jsonl文件
+    output_jsonl_cnt = process_file_to_jsonl(orig_output_file, jsonl_output_file)
+    # TODO针对jsonl文件，需要去重
+    
+    # 处理jsonl文件到MNBVC格式 TODO
+
+    # 打印处理完成的所有相关信息
+    logging.info(f"File: {full_filename}, Record Count: {record_cnt}, Response Count: {response_cnt}, Reddit Post: {reddit_post}, Output JSONL Count: {output_jsonl_cnt}")
+    # 将处理结果写入info文件
+    return f"File: {full_filename}, Record Count: {record_cnt}, Response Count: {response_cnt}, Reddit Post: {reddit_post}, Output JSONL Count: {output_jsonl_cnt}\n"
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Parse reddit data.")
     # 非必填参数
-    parser.add_argument("source_dir", type=str, default="D:\\MNBVC\\reddit-mnbvc\\test_warc_dir\\src_file\\", help="文件名或者目录名",nargs="?")
+    # parser.add_argument("source_dir", type=str, default="D:\\MNBVC\\reddit-mnbvc\\test_warc_dir\\src_file\\", help="文件名或者目录名",nargs="?")
+    parser.add_argument("source_dir", type=str, default="\\\XPNas\\network_share\\MNBVC\\reddit_warc_gz", help="文件名或者目录名",nargs="?")
     parser.add_argument("dest_dir",type=str, default="D:\\MNBVC\\reddit-mnbvc\\test_warc_dir\\dest_file\\", help="文件名或者目录名",nargs="?")
     parser.add_argument("-s","--max_size",type=int,default=500 * 1024 * 1024,help="max chunk size")
     args = parser.parse_args()
@@ -308,40 +199,36 @@ if __name__ == "__main__":
     # 建立全局的信息记录文件，将每个文件的最终处理结果写入
     file_name_info = os.path.join(OUTPUT_DIR, 'process_info.txt')
     info_file = open(file_name_info, 'w', encoding='utf-8')
+    
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        # 1. 循环读取目录下所有warc文件，包括子目录下的文件
+        for root, _, files in os.walk(SOURCE_DIR):
+            # 打印当前目录下的根目录和文件
+            logging.info(f"Root: {root}, Files: {files}")
+            for filename in files:
+                # 打印全路径文件名，包括子目录
+                full_filename = os.path.join(root, filename)
+                # 判断是否为warc或warc.gz文件，如果不是就跳过
+                if not full_filename.endswith('.warc') and not full_filename.endswith('.warc.gz'):
+                    logging.warning(f"File: {full_filename} is not a WARC file, skipped!")
+                    continue
+                # 创建原始输出文件，文件名和输入filename一样，只是后缀不一样，原始文件名去掉.warc或者.warc.gz，加上_json.txt
+                orig_output_file = os.path.join(OUTPUT_DIR, f'{os.path.splitext(filename)[0]}_json.txt')
+                # 创建清洗后的输出文件，文件名和输入filename一样，只是后缀不一样，原始文件名去掉.warc或者.warc.gz，加上_jsonl.txt
+                jsonl_output_file = os.path.join(OUTPUT_DIR, f'{os.path.splitext(filename)[0]}_jsonl.txt')
+                
+                # # 创建异常文件
+                err_output_file = os.path.join(OUTPUT_DIR, f'{os.path.splitext(filename)[0]}_err_jsonl.txt')
 
-    # 1. 循环读取目录下所有warc文件
-    for filename in os.listdir(SOURCE_DIR):
-        # 打印全路径文件名
-        full_filename = os.path.join(SOURCE_DIR, filename)
-        # 判断是否为warc或warc.gz文件，如果不是就跳过
-        if not full_filename.endswith('.warc') and not full_filename.endswith('.warc.gz'):
-            logging.warning(f"File: {full_filename} is not a WARC file, skipped!")
-            continue
-        # 创建原始输出文件，文件名和输入filename一样，只是后缀不一样，原始文件名去掉.warc或者.warc.gz，加上_json.txt
-        orig_output_file = os.path.join(OUTPUT_DIR, f'{os.path.splitext(filename)[0]}_json.txt')
-        # 创建清洗后的输出文件，文件名和输入filename一样，只是后缀不一样，原始文件名去掉.warc或者.warc.gz，加上_jsonl.txt
-        jsonl_output_file = os.path.join(OUTPUT_DIR, f'{os.path.splitext(filename)[0]}_jsonl.txt')
+                # 提交任务到线程池
+                futures.append(executor.submit(process_file, full_filename, orig_output_file, jsonl_output_file))
         
-        # # 创建异常文件
-        # file_name_err = os.path.join(OUTPUT_DIR, f'demo_json_err.txt')
-        # err_file = open(file_name_err, 'w', encoding='utf-8')
+        # 等待所有任务完成
+        for future in as_completed(futures):
+            result = future.result()
+            info_file.write(result)
 
-        # 打印文件名和输出文件名
-        logging.info(f"Processing File: {full_filename}, Orig output File: {orig_output_file}, Output File: {jsonl_output_file}")
-        # 2. 针对每个文件，循环处理，提取json，一个warc文件中所有提取的json放在一个文件中
-        record_cnt, response_cnt, reddit_post = process_file_to_json(full_filename, orig_output_file)
-        
-        # 3. 针对所有的json文件，处理成标准jsonl格式，写入新文件，一个json文件对应一个jsonl文件
-        output_jsonl_cnt = process_file_to_jsonl(orig_output_file, jsonl_output_file)
-        # TODO针对jsonl文件，需要去重
-        
-        # 处理jsonl文件到MNBVC格式 TODO
-
-        # 打印处理完成的所有相关信息
-        logging.info(f"File: {filename}, Record Count: {record_cnt}, Response Count: {response_cnt}, Reddit Post: {reddit_post}, Output JSONL Count: {output_jsonl_cnt}")
-        # 将处理结果写入info文件
-        info_file.write(f"File: {filename}, Record Count: {record_cnt}, Response Count: {response_cnt}, Reddit Post: {reddit_post}, Output JSONL Count: {output_jsonl_cnt}\n")
-        
     # 关闭info文件
     info_file.close()
     # 关闭所有日志记录
@@ -351,3 +238,4 @@ if __name__ == "__main__":
 # 2.优化原来对于url的处理逻辑
 # 3.优化了日志记录，增加了更多的日志记录
 # 4.增加了对于文件处理的异常处理
+# 5.修改为多线程执行
