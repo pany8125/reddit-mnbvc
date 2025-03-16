@@ -10,6 +10,8 @@ SOURCE = 'reddit'
 OUTPUT_DIR = ''
 MAX_SIZE = 0
 
+# 处理第一份reddit数据的代码
+
 # 配置日志记录
 logging.basicConfig(
     filename= SOURCE + '_log_file.log',  # 指定日志文件的名称
@@ -158,7 +160,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # directory = "G:\\MNBVC\\reddit\\unzip"
     # directory = "G:\\MNBVC\\reddit-mnbvc\\src_file"
-    logging.info(f"print {args.dest_dir}")
+    logging.info(f"args.dest_dir: {args.dest_dir}")
 
     OUTPUT_DIR = args.dest_dir
     MAX_SIZE = args.max_size

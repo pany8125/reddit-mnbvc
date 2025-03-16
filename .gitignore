@@ -8,3 +8,6 @@ dist
 src_file
 dest_file
 ref_file
+test_zip_dir
+test_warc_dir
+test_warc_2_dir
